@@ -1,0 +1,96 @@
+name: Sync Repositories to Gitee
+
+on:
+  schedule:
+    - cron: '5 2 * * *'  # 每天早上 02:05 UTC = 北京时间 10:05
+    - cron: '5 8 * * *'  # 每天下午 08:05 UTC = 北京时间 16:05
+  workflow_dispatch:  # 允许手动触发工作流
+
+jobs:
+  check_and_sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the current repository
+        uses: actions/checkout@v3
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+      - name: Check if any repository has new changes
+        id: check_changes
+        run: |
+          REPOS=(
+            "https://github.com/Kengxxiao/ArknightsGameData.git"
+            "https://github.com/fexli/ArknightsResource.git"
+            "https://github.com/ArknightsAssets/ArknightsGamedata.git"
+            "https://github.com/yuanyan3060/ArknightsGameResource.git"
+          )
+
+          # 为每个仓库指定不同的路径
+          PATHS=(
+            "zh_CN/gamedata/excel"    # Kengxxiao/ArknightsGameData
+            "gamedata/excel"          # fexli/ArknightsResource
+            "cn/gamedata/excel"       # ArknightsAssets/ArknightsGamedata
+            "gamedata/excel"          # yuanyan3060/ArknightsGameResource
+          )
+
+          UPDATED_REPO=""
+          for i in ${!REPOS[@]}; do
+            REPO="${REPOS[$i]}"
+            TARGET_PATH="${PATHS[$i]}"
+            echo "Checking repository: $REPO at path $TARGET_PATH"
+            git clone --depth 1 --branch main $REPO temp_repo
+            cd temp_repo
+            # 获取目标路径的最新修改时间
+            if git log -1 --format="%ct" -- $TARGET_PATH; then
+              LATEST_COMMIT_TIME=$(git log -1 --format="%ct" -- $TARGET_PATH)
+              if [ -z "$LATEST_COMMIT_TIME" ]; then
+                echo "No changes in $TARGET_PATH"
+              else
+                # 找到最新的仓库
+                if [ -z "$UPDATED_REPO" ] || [ "$LATEST_COMMIT_TIME" -gt "$LATEST_COMMIT_TIME" ]; then
+                  UPDATED_REPO=$REPO
+                fi
+              fi
+            fi
+            cd ..
+            rm -rf temp_repo
+          done
+
+          if [ -n "$UPDATED_REPO" ]; then
+            echo "Latest updated repo: $UPDATED_REPO"
+            echo "::set-output name=updated_repo::$UPDATED_REPO"
+          else
+            echo "No updates found."
+            exit 0
+          fi
+
+      - name: Sync with Gitee if repo is updated
+        if: steps.check_changes.outputs.updated_repo != ''
+        run: |
+          REPO_TO_SYNC="${{ steps.check_changes.outputs.updated_repo }}"
+          TARGET_PATH="gamedata/excel"
+          
+          # Checkout the Gitee repository
+          git clone https://gitee.com/${{ secrets.GITEE_USERNAME }}/your-gitee-repo.git gitee_repo
+          cd gitee_repo
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          # Sync the updated path from the GitHub repo
+          git clone --depth 1 --branch main $REPO_TO_SYNC temp_repo
+          cp -r temp_repo/$TARGET_PATH/* ./  # 复制到Gitee仓库
+          rm -rf temp_repo
+
+          # Add, commit, and push to Gitee
+          git add .
+          git commit -m "Sync updates from $REPO_TO_SYNC"
+          
+          # Push to Gitee using secrets for authentication
+          git remote add gitee https://$GITEE_USERNAME:${{ secrets.GITEE_TOKEN }}@gitee.com/${{ secrets.GITEE_USERNAME }}/your-gitee-repo.git
+          git push --force gitee main
+
+          cd ..
+          rm -rf gitee_repo
